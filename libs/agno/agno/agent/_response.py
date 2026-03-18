@@ -1057,18 +1057,13 @@ def handle_model_response_stream(
     output_schema = run_context.output_schema if run_context else None
     should_parse_structured_output = output_schema is not None and agent.parse_response and agent.parser_model is None
 
-    stream_model_response = True
-    if should_parse_structured_output:
-        log_debug("Response model set, model response is not streamed.")
-        stream_model_response = False
-
     for model_response_event in agent.model.response_stream(
         messages=run_messages.messages,
         response_format=response_format,
         tools=tools,
         tool_choice=agent.tool_choice,
         tool_call_limit=agent.tool_call_limit,
-        stream_model_response=stream_model_response,
+        stream_model_response=True,
         run_response=run_response,
         send_media_to_model=agent.send_media_to_model,
         compression_manager=agent.compression_manager if agent.compress_tool_results else None,
@@ -1156,6 +1151,9 @@ def handle_model_response_stream(
     # Update the RunOutput messages
     run_response.messages = messages_for_run_response
 
+    if should_parse_structured_output:
+        convert_response_to_structured_format(agent, run_response, run_context=run_context)
+
     # Determine reasoning completed
     if stream_events and reasoning_state["reasoning_started"]:
         all_reasoning_steps: List[ReasoningStep] = []
@@ -1206,18 +1204,13 @@ async def ahandle_model_response_stream(
     output_schema = run_context.output_schema if run_context else None
     should_parse_structured_output = output_schema is not None and agent.parse_response and agent.parser_model is None
 
-    stream_model_response = True
-    if should_parse_structured_output:
-        log_debug("Response model set, model response is not streamed.")
-        stream_model_response = False
-
     model_response_stream = agent.model.aresponse_stream(
         messages=run_messages.messages,
         response_format=response_format,
         tools=tools,
         tool_choice=agent.tool_choice,
         tool_call_limit=agent.tool_call_limit,
-        stream_model_response=stream_model_response,
+        stream_model_response=True,
         run_response=run_response,
         send_media_to_model=agent.send_media_to_model,
         compression_manager=agent.compression_manager if agent.compress_tool_results else None,
@@ -1308,6 +1301,9 @@ async def ahandle_model_response_stream(
     # Update the RunOutput messages
     run_response.messages = messages_for_run_response
 
+    if should_parse_structured_output:
+        convert_response_to_structured_format(agent, run_response, run_context=run_context)
+
     if stream_events and reasoning_state["reasoning_started"]:
         all_reasoning_steps: List[ReasoningStep] = []
         if run_response and run_response.reasoning_steps:
@@ -1370,23 +1366,11 @@ def handle_model_response_chunk(
         model_response_event = cast(ModelResponse, model_response_event)
         # If the model response is an assistant_response, yield a RunOutput
         if model_response_event.event == ModelResponseEvent.assistant_response.value:
-            content_type = "str"
-
             # Process content and thinking
             if model_response_event.content is not None:
-                if parse_structured_output:
-                    model_response.content = model_response_event.content
-                    convert_response_to_structured_format(agent, model_response, run_context=run_context)
-
-                    # Get output_schema from run_context
-                    output_schema = run_context.output_schema if run_context else None
-                    content_type = "dict" if isinstance(output_schema, dict) else output_schema.__name__  # type: ignore
-                    run_response.content = model_response.content
-                    run_response.content_type = content_type
-                else:
-                    model_response.content = (model_response.content or "") + model_response_event.content
-                    run_response.content = model_response.content
-                    run_response.content_type = "str"
+                model_response.content = (model_response.content or "") + model_response_event.content
+                run_response.content = model_response.content
+                run_response.content_type = "str"
 
             # Process reasoning content
             if model_response_event.reasoning_content is not None:
@@ -1411,18 +1395,7 @@ def handle_model_response_chunk(
                 run_response.citations = model_response_event.citations
 
             # Only yield if we have content to show
-            if content_type != "str":
-                yield handle_event(  # type: ignore
-                    create_run_output_content_event(
-                        from_run_response=run_response,
-                        content=model_response.content,
-                        content_type=content_type,
-                    ),
-                    run_response,
-                    events_to_skip=agent.events_to_skip,  # type: ignore
-                    store_events=agent.store_events,
-                )
-            elif (
+            if (
                 model_response_event.content is not None
                 or model_response_event.reasoning_content is not None
                 or model_response_event.redacted_reasoning_content is not None
